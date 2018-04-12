@@ -80,7 +80,7 @@ static int nsp_misc_net_tx(struct sk_buff *skb, struct net_device *dev)
 	struct odpfsl_kni_mbuf *pkt_kva = NULL;
 	struct odpfsl_kni_mbuf *pkt_va = NULL;
 
-	dev->trans_start = jiffies; /* save the timestamp */
+	netif_trans_update(dev);
 
 	/* Check if the length of skb is less than kbuf size */
 	if (skb->len > kni->kbuf_size)
