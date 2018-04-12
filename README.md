@@ -12,7 +12,6 @@ export ARCH=arm64
 export LSDK_DIR=/path/to/flexbuild
 export KERNEL_PATH=$LSDK_DIR/packages/linux/linux
 export ODP_PATH=$LSDK_DIR/packages/apps/odp
-export CROSS_COMPILE=aarch64-linux-gnu-
 ```
 ### Compile
 ```

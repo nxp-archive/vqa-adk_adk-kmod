@@ -3,14 +3,12 @@
 #
 SUBDIRS = nsp_misc
 
-.PHONY: subdirs $(SUBDIRS) all clean install
+.PHONY: all clean install
 
-subdirs: $(SUBDIRS)
-
-$(SUBDIRS):
-	$(MAKE) -C $@ all
-
-all: subdirs
+all:
+	@for sdir in $(SUBDIRS); do \
+		$(MAKE) ARCH=$(ARCH) -C $(KERNEL_PATH) M=$(PWD)/$$sdir modules || exit 1; \
+	done
 
 clean:
 	@for sdir in $(SUBDIRS); do \
