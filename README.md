@@ -10,8 +10,7 @@ This project depends on Layerscape SDK (LSDK). These modules can be used in LS20
 export CROSS_COMPILE=aarch64-linux-gnu-
 export ARCH=arm64
 export LSDK_DIR=/path/to/flexbuild
-export KERNEL_PATH=$LSDK_DIR/build/linux/linux/arm64/output/LSDK-18.03-V4.9
-export ODP_PATH=$LSDK_DIR/packages/apps/odp
+export KERNEL_PATH=$LSDK_DIR/build/linux/linux/arm64/output/LSDK-18.06-V4.9
 ```
 ### Compile
 ```

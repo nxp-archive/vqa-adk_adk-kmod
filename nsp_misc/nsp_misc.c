@@ -3,7 +3,6 @@
  *
  *   Copyright (c) 2014-2016 Freescale Semiconductor, Inc. All rights reserved.
  *   Copyright (c) 2017 NXP
- *   Copyright(c) 2010-2013 Intel Corporation. All rights reserved.
  *
  *   This program is free software; you can redistribute it and/or modify
  *   it under the terms of version 2 of the GNU General Public License as
@@ -24,13 +23,10 @@
 
 #include <linux/module.h>
 #include <linux/init.h>
-#include <linux/io.h>
 #include <linux/atomic.h>
 #include <linux/miscdevice.h>
 #include <linux/netdevice.h>
 #include <linux/fs.h>
-#include <linux/kthread.h>
-#include <linux/rwsem.h>
 #include <linux/mm.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
@@ -38,13 +34,14 @@
 #include <linux/version.h>
 #include <linux/etherdevice.h> /* eth_type_trans */
 #include <linux/skbuff.h>
-#include <linux/delay.h>
 #include <net/ip.h>
 
-#include "kni_fifo.h"
-#include "kni_dev.h"
-
 #include <net/xfrm.h>
+
+#if LINUX_VERSION_CODE < KERNEL_VERSION(4,14,0)
+#define nf_register_net_hooks(a,b,c)	nf_register_hooks(b,c)
+#define nf_unregister_net_hooks(a,b,c)	nf_unregister_hooks(b,c)
+#endif
 
 struct pkt_meta_data {
 	uint16_t l2_proto; /**< L2 protocol of the packet. Supported protocols
@@ -71,79 +68,6 @@ MODULE_DESCRIPTION("Misc kernel module for VortiQa NSP Demo Application");
 static int nsp_misc_rcv(struct sk_buff *skb, struct net_device *dev,
                    struct packet_type *pt, struct net_device *orig_dev);
 
-
-static int nsp_misc_net_tx(struct sk_buff *skb, struct net_device *dev)
-{
-	uint16_t len = 0;
-	unsigned ret;
-	struct kni_dev *kni = netdev_priv(dev);
-	struct odpfsl_kni_mbuf *pkt_kva = NULL;
-	struct odpfsl_kni_mbuf *pkt_va = NULL;
-
-	netif_trans_update(dev);
-
-	/* Check if the length of skb is less than kbuf size */
-	if (skb->len > kni->kbuf_size)
-		goto drop;
-
-	/**
-	 * Check if it has at least one free entry in tx_q and
-	 * one entry in alloc_q.
-	 */
-	if (kni_fifo_free_count(kni->tx_q) == 0 ||
-			kni_fifo_count(kni->alloc_q) == 0) {
-		/**
-		 * If no free entry in tx_q or no entry in alloc_q,
-		 * drops skb and goes out.
-		 */
-		goto drop;
-	}
-
-	/* dequeue a kbuf from alloc_q */
-	ret = kni_fifo_get(kni->alloc_q, (void **)&pkt_va, 1);
-	if (likely(ret == 1)) {
-		void *data_kva;
-
-		pkt_kva = (void *)pkt_va - kni->kbuf_va + kni->kbuf_kva;
-		data_kva = pkt_kva->data - kni->kbuf_va + kni->kbuf_kva;
-
-		len = skb->len;
-		memcpy(data_kva, skb->data, len);
-		if (unlikely(len < ETH_ZLEN)) {
-			memset(data_kva + len, 0, ETH_ZLEN - len);
-			len = ETH_ZLEN;
-		}
-		pkt_kva->pkt_len = len;
-		pkt_kva->data_len = len;
-		/* passes gso_size from Kernel to GPP */
-		pkt_kva->ol_info = skb_shinfo(skb)->gso_size;
-
-		/* enqueue kbuf into tx_q */
-		ret = kni_fifo_put(kni->tx_q, (void **)&pkt_va, 1);
-		if (unlikely(ret != 1)) {
-			/* Failing should not happen */
-			goto drop;
-		}
-	} else {
-		/* Failing should not happen */
-		goto drop;
-	}
-
-	/* Free skb and update statistics */
-	dev_kfree_skb(skb);
-	kni->stats.tx_bytes += len;
-	kni->stats.tx_packets++;
-
-	return NETDEV_TX_OK;
-
-drop:
-	/* Free skb and update statistics */
-	dev_kfree_skb(skb);
-	kni->stats.tx_dropped++;
-
-	return NETDEV_TX_OK;
-}
-
 static unsigned int nsp_misc_ipv4_in(
 		void *priv,
 		struct sk_buff *skb,
@@ -152,12 +76,12 @@ static unsigned int nsp_misc_ipv4_in(
 {
 	struct net_device  *dev;
 	dev = state->out;
-	if(strncmp(dev->name, "kni", 2))
-	return NF_ACCEPT;
 
-	if(!skb_dst(skb)->xfrm) {
-	return NF_ACCEPT;
-	}
+	if(strncmp(dev->name, "kni", 3))
+		return NF_ACCEPT;
+
+	if(!skb_dst(skb)->xfrm)
+		return NF_ACCEPT;
 
 	skb->dev = dev;
 	skb->protocol = htons(ETH_P_IP);
@@ -166,7 +90,7 @@ static unsigned int nsp_misc_ipv4_in(
 	              kfree_skb(skb);
 	              return NF_STOLEN;
 	}
-	nsp_misc_net_tx(skb, dev);
+	dev_queue_xmit(skb);
 	return NF_STOLEN;
 }
 
@@ -198,7 +122,7 @@ static unsigned int nsp_misc_ipv6_in(
 		return NF_STOLEN;
 	}
 
-	nsp_misc_net_tx(skb, dev);
+	dev_queue_xmit(skb);
 	return NF_STOLEN;
 }
 
@@ -258,7 +182,9 @@ static int __init nsp_misc_init(void)
 {
 	int err;
 
-	err = nf_register_hooks(nsp_misc_hooks, ARRAY_SIZE(nsp_misc_hooks));
+	err = nf_register_net_hooks(
+			current->nsproxy->net_ns,
+			nsp_misc_hooks, ARRAY_SIZE(nsp_misc_hooks));
 	if (err < 0)
 		return err;
 
@@ -268,7 +194,9 @@ static int __init nsp_misc_init(void)
 
 static void __exit nsp_misc_exit(void)
 {
-	nf_unregister_hooks(nsp_misc_hooks, ARRAY_SIZE(nsp_misc_hooks));
+	nf_unregister_net_hooks(
+			current->nsproxy->net_ns,
+			nsp_misc_hooks, ARRAY_SIZE(nsp_misc_hooks));
 	dev_remove_pack(&nsp_misc_packet);
 }
 
